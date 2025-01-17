@@ -38,6 +38,27 @@ void *nvme_realloc(void *p, size_t len)
 	return result;
 }
 
+static bool nvme_hugepage_available(void)
+{
+   FILE *fp = fopen("/proc/meminfo", "r");
+    if (!fp) {
+        perror("Failed to open /proc/meminfo");
+        return false;
+    }
+
+    char line[256];
+	long huge_page_size = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (sscanf(line, "Hugepagesize: %ld kB", &huge_page_size) == 1) {
+            fclose(fp);
+            return true;
+        }
+    }
+
+    fclose(fp);
+    return false;
+}
+
 void *nvme_alloc_huge(size_t len, struct nvme_mem_huge *mh)
 {
 	memset(mh, 0, sizeof(*mh));
@@ -45,10 +66,11 @@ void *nvme_alloc_huge(size_t len, struct nvme_mem_huge *mh)
 	len = ROUND_UP(len, 0x1000);
 
 	/*
-	 * For smaller allocation we just use posix_memalign and hope the kernel
+	 * For smaller allocation or huge pages are not available,
+	 * we just use posix_memalign and hope the kernel
 	 * is able to convert to a contiguous memory region.
 	 */
-	if (len < HUGE_MIN) {
+	if (len < HUGE_MIN || !nvme_hugepage_available()) {
 		mh->p = nvme_alloc(len);
 		if (!mh->p)
 			return NULL;
