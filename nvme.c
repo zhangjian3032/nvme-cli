@@ -181,7 +181,8 @@ static struct program nvme = {
 	.desc = "The '<device>' may be either an NVMe character "
 		"device (ex: /dev/nvme0), an nvme block device "
 		"(ex: /dev/nvme0n1), or a mctp address in the form "
-		"mctp:<net>,<eid>[:ctrl-id]",
+		"mctp:<net>,<eid>[:ctrl-id\n"
+		"pcie-mctp:<bdf>[:ctrl-id], the bdf like 0xca",
 	.extensions = &builtin,
 };
 
@@ -357,17 +358,41 @@ static int parse_mi_dev(char *dev, unsigned int *net, uint8_t *eid,
 	return -1;
 }
 
+static int parse_pcie_mi_dev(char *dev, uint16_t *bdf,
+			unsigned int *ctrl)
+{
+	int rc;
+
+	/* <bdf>:<ctrl-id> form */
+	rc = sscanf(dev, "pcie-mctp:%x:%u", bdf, ctrl);
+	if (rc == 2)
+		return 0;
+
+	/* <bdf>:<ctrl-id> form, implicit ctrl-id = 0 */
+	*ctrl = 0;
+	rc = sscanf(dev, "pcie-mctp:%x", bdf);
+	if (rc == 1)
+		return 0;
+
+	return -1;
+}
+
 static int open_dev_mi_mctp(struct nvme_dev **devp, char *devstr)
 {
 	unsigned int net, ctrl_id;
 	struct nvme_dev *dev;
 	unsigned char eid;
 	int rc;
+	uint16_t bdf;
+	bool use_pcie;
 
 	rc = parse_mi_dev(devstr, &net, &eid, &ctrl_id);
 	if (rc) {
-		nvme_show_error("invalid device specifier '%s'", devstr);
-		return rc;
+		if (parse_pcie_mi_dev(devstr, &bdf, &ctrl_id)) {
+			nvme_show_error("invalid device specifier '%s'", devstr);
+			return rc;
+		}
+		use_pcie = true;
 	}
 
 	dev = calloc(1, sizeof(*dev));
@@ -381,6 +406,10 @@ static int open_dev_mi_mctp(struct nvme_dev **devp, char *devstr)
 	dev->mi.root = nvme_mi_create_root(stderr, LOG_WARNING);
 	if (!dev->mi.root)
 		goto err_free;
+
+	if (use_pcie) {
+		setup_pcie_mctp(bdf);
+	}
 
 	dev->mi.ep = nvme_mi_open_mctp(dev->mi.root, net, eid);
 	if (!dev->mi.ep)
@@ -424,7 +453,8 @@ static int get_dev(struct nvme_dev **dev, int argc, char **argv, int flags)
 	devname = argv[optind];
 	errno = ENXIO;
 
-	if (!strncmp(devname, "mctp:", strlen("mctp:")))
+	if (!strncmp(devname, "mctp:", strlen("mctp:")) ||
+		!strncmp(devname, "pcie-mctp:", strlen("pcie-mctp:")))
 		ret = open_dev_mi_mctp(dev, devname);
 	else
 		ret = open_dev_direct(dev, devname, flags);
